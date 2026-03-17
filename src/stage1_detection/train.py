@@ -25,7 +25,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision.models.detection import FasterRCNN
 
-from src.stage1_detection.dataset import MUSCIMADataset, collate_fn
+from src.stage1_detection.dataset import MUSCIMADataset, collate_fn, augment_transform
 from src.stage1_detection.detector import build_faster_rcnn
 from src.stage1_detection.evaluate import evaluate
 from src.stage1_detection.visualize import plot_all
@@ -92,7 +92,7 @@ def train(args):
 
     # ---- Datasets ----
     # apply_resize=True scales images to max 800px — critical for performance
-    train_ds = MUSCIMADataset(args.data_dir, split="train", apply_resize=True)
+    train_ds = MUSCIMADataset(args.data_dir, split="train", apply_resize=True, transform=augment_transform)
     val_ds   = MUSCIMADataset(args.data_dir, split="val",   apply_resize=True)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,

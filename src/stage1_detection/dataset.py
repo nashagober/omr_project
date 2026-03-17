@@ -76,6 +76,49 @@ SKIP_CLASSES = {
     "multiMeasureRest", "multi-measure-rest",
 }
 
+import random
+import torchvision.transforms.functional as TF
+
+def augment_transform(image: torch.Tensor,
+                      target: Dict) -> Tuple[torch.Tensor, Dict]:
+    """
+    Random augmentations for training images.
+    All transforms preserve bounding box validity.
+    Only call this during training, not val/test.
+    """
+
+    # 1. Random horizontal flip
+    if random.random() > 0.5:
+        w = image.shape[-1]
+        image = TF.hflip(image)
+        if len(target['boxes']) > 0:
+            boxes = target['boxes'].clone()
+            boxes[:, 0] = w - target['boxes'][:, 2]
+            boxes[:, 2] = w - target['boxes'][:, 0]
+            target['boxes'] = boxes
+
+    # 2. Random brightness / contrast / saturation jitter
+    if random.random() > 0.3:
+        image = TF.adjust_brightness(image, random.uniform(0.7, 1.3))
+    if random.random() > 0.3:
+        image = TF.adjust_contrast(image, random.uniform(0.7, 1.3))
+
+    # 3. Random Gaussian noise (simulates scan quality variation)
+    if random.random() > 0.5:
+        noise = torch.randn_like(image) * 0.02
+        image = (image + noise).clamp(0, 1)
+
+    # 4. Random scale jitter — resize to 75%–125% of current size
+    if random.random() > 0.5:
+        h, w  = image.shape[-2], image.shape[-1]
+        scale = random.uniform(0.75, 1.25)
+        new_h = max(int(h * scale), 100)
+        new_w = max(int(w * scale), 100)
+        image = TF.resize(image, [new_h, new_w])
+        if len(target['boxes']) > 0:
+            target['boxes'] = target['boxes'] * scale
+
+    return image, target
 
 def class_name_to_idx(name: str) -> int:
     normalized = name.lower().replace("_", "-")
