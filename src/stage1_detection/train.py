@@ -8,10 +8,10 @@ Usage:
         --local_ckpt_dir /content/local_checkpoints \
         --epochs         40 \
         --batch_size     4 \
-        --lr             0.0005
+        --lr             0.005
 
---local_ckpt_dir : per-epoch checkpoints saved here (use Colab local storage)
---output_dir     : best.pt, metrics.json, and plots saved here (use Drive)
+--local_ckpt_dir : per-epoch checkpoints saved here (Colab local storage)
+--output_dir     : best.pt, metrics.json, plots saved here (Drive)
 """
 
 import argparse
@@ -64,15 +64,6 @@ def train_one_epoch(model: FasterRCNN, optimizer, loader: DataLoader,
 
 
 # ---------------------------------------------------------------------------
-# Backbone freeze helper
-# ---------------------------------------------------------------------------
-
-def set_backbone_frozen(model: FasterRCNN, frozen: bool):
-    for param in model.backbone.parameters():
-        param.requires_grad = not frozen
-
-
-# ---------------------------------------------------------------------------
 # Main train function
 # ---------------------------------------------------------------------------
 
@@ -85,7 +76,7 @@ def train(args):
     results_dir = output_dir / "results"
     plots_dir   = results_dir / "plots"
 
-    # Per-epoch checkpoints → local_ckpt_dir if provided, else output_dir
+    # Per-epoch checkpoints → local only if specified
     if args.local_ckpt_dir:
         ckpt_dir = Path(args.local_ckpt_dir) / "checkpoints"
         print(f"[Train] Per-epoch checkpoints → {ckpt_dir}  (local, not Drive)")
@@ -93,15 +84,16 @@ def train(args):
         ckpt_dir = output_dir / "checkpoints"
         print(f"[Train] Per-epoch checkpoints → {ckpt_dir}")
 
-    # best.pt always goes to Drive
+    # best.pt always goes to output_dir (Drive)
     best_ckpt_dir = output_dir / "checkpoints"
 
     for d in [ckpt_dir, best_ckpt_dir, results_dir, plots_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     # ---- Datasets ----
-    train_ds = MUSCIMADataset(args.data_dir, split="train")
-    val_ds   = MUSCIMADataset(args.data_dir, split="val")
+    # apply_resize=True scales images to max 800px — critical for performance
+    train_ds = MUSCIMADataset(args.data_dir, split="train", apply_resize=True)
+    val_ds   = MUSCIMADataset(args.data_dir, split="val",   apply_resize=True)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,
                               shuffle=True,  collate_fn=collate_fn,
@@ -114,10 +106,6 @@ def train(args):
     model = build_faster_rcnn(pretrained_backbone=True)
     model.to(device)
 
-    # Freeze backbone for first 5 epochs
-    set_backbone_frozen(model, frozen=True)
-    print("[Train] Backbone frozen for first 5 epochs")
-
     # ---- Resume ----
     start_epoch = 1
     if args.resume and Path(args.resume).exists():
@@ -126,17 +114,19 @@ def train(args):
         start_epoch = ckpt.get("epoch", 0) + 1
         print(f"[Train] Resumed from epoch {start_epoch - 1}")
 
-    # ---- Optimizer & Scheduler ----
+    # ---- Optimizer ----
+    # Single optimizer for entire training — no backbone freeze/unfreeze
+    # which was causing the LR crash at epoch 6
     params    = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=args.lr,
                                 momentum=0.9, weight_decay=1e-4)
 
-    # Linear warmup for 5 epochs then cosine decay
-    def lr_lambda(epoch):
-        if epoch < 5:
-            return (epoch + 1) / 5
-        return 0.5 * (1 + math.cos(
-            math.pi * (epoch - 5) / max(1, args.epochs - 5)))
+    # Warmup for 3 epochs then cosine decay — stays active the whole run
+    def lr_lambda(ep):
+        if ep < 3:
+            return (ep + 1) / 3          # linear warmup
+        progress = (ep - 3) / max(1, args.epochs - 3)
+        return 0.5 * (1 + math.cos(math.pi * progress))
 
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
@@ -161,15 +151,6 @@ def train(args):
         t0 = time.time()
         print(f"\n{'='*60}")
         print(f"Epoch {epoch}/{args.epochs}")
-
-        # Unfreeze backbone after epoch 5
-        if epoch == 6:
-            set_backbone_frozen(model, frozen=False)
-            # Re-create optimizer with all parameters now unfrozen
-            params    = [p for p in model.parameters() if p.requires_grad]
-            optimizer = torch.optim.SGD(params, lr=args.lr * 0.1,
-                                        momentum=0.9, weight_decay=1e-4)
-            print("  [Train] Backbone unfrozen — continuing with lower LR")
 
         train_losses = train_one_epoch(
             model, optimizer, train_loader, device, epoch)
@@ -204,7 +185,7 @@ def train(args):
         print(f"  LR        : {current_lr:.6f}")
         print(f"  Time      : {elapsed:.1f}s")
 
-        # Per-epoch checkpoint → local storage only
+        # Per-epoch checkpoint → local only
         torch.save({
             "epoch":                epoch,
             "model_state_dict":     model.state_dict(),
@@ -222,14 +203,14 @@ def train(args):
             }, best_ckpt_dir / "best.pt")
             print(f"  ✓ New best mAP: {best_map:.4f} — saved best.pt → Drive")
 
-        # Save metrics JSON after every epoch so progress isn't lost on timeout
+        # Save metrics after every epoch so timeouts don't lose progress
         with open(results_dir / "metrics.json", "w") as f:
             json.dump(history, f, indent=2)
 
     # ---- Final plots ----
     plot_all(history, plots_dir)
     print(f"\n[Train] Complete. Best val mAP: {best_map:.4f}")
-    print(f"[Train] Results saved → {output_dir}")
+    print(f"[Train] Results → {output_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +233,7 @@ def evaluate_and_plot(checkpoint_path: str, data_dir: str,
     model.to(device)
     model.eval()
 
-    test_ds     = MUSCIMADataset(data_dir, split="test")
+    test_ds     = MUSCIMADataset(data_dir, split="test", apply_resize=True)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False,
                              collate_fn=collate_fn, num_workers=0)
 
@@ -273,7 +254,7 @@ def evaluate_and_plot(checkpoint_path: str, data_dir: str,
     plot_per_class_map(metrics["per_class"], plots_dir)
     visualize_detections(model, test_ds, device, plots_dir, num_samples=6)
 
-    print(f"\n[Eval] Done. Results saved → {results_dir}")
+    print(f"\n[Eval] Done. Results → {results_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +268,10 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir",     type=str,   default="outputs/stage1",
                         help="Drive path — best.pt, metrics, plots saved here")
     parser.add_argument("--local_ckpt_dir", type=str,   default=None,
-                        help="Local path for per-epoch checkpoints (avoids filling Drive)")
+                        help="Local path for per-epoch checkpoints (keeps Drive free)")
     parser.add_argument("--epochs",         type=int,   default=40)
     parser.add_argument("--batch_size",     type=int,   default=4)
-    parser.add_argument("--lr",             type=float, default=0.0005)
+    parser.add_argument("--lr",             type=float, default=0.005)
     parser.add_argument("--num_workers",    type=int,   default=2)
     parser.add_argument("--resume",         type=str,   default=None)
     args = parser.parse_args()
