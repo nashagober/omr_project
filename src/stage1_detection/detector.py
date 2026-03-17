@@ -33,19 +33,19 @@ class DetectedSymbol:
 
 def build_faster_rcnn(num_classes: int = NUM_CLASSES,
                       pretrained_backbone: bool = True) -> FasterRCNN:
-    """
-    Build a Faster R-CNN with ResNet-50-FPN backbone.
-    The classification head is replaced to match our num_classes.
-
-    Args:
-        num_classes        : total classes including background (default 26)
-        pretrained_backbone: use COCO-pretrained weights for the backbone
-    """
     model = fasterrcnn_resnet50_fpn(pretrained=pretrained_backbone)
 
-    # Replace the box predictor head
+    # Replace head
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+    # MUSCIMA++ pages are very dense — default limits of 100 detections
+    # are far too low. Raise all proposal and detection limits.
+    model.rpn.pre_nms_top_n_train  = 4000  # default 2000
+    model.rpn.pre_nms_top_n_test   = 2000  # default 1000
+    model.rpn.post_nms_top_n_train = 2000  # default 2000
+    model.rpn.post_nms_top_n_test  = 1000  # default 1000
+    model.roi_heads.detections_per_img = 600   # default 100  ← this is the cap
 
     return model
 

@@ -124,9 +124,10 @@ def train(args):
     # Warmup for 3 epochs then cosine decay — stays active the whole run
     def lr_lambda(ep):
         if ep < 3:
-            return (ep + 1) / 3          # linear warmup
+            return (ep + 1) / 3          # 3-epoch warmup
+        # Slower cosine — only decays to 10% of peak by end of training
         progress = (ep - 3) / max(1, args.epochs - 3)
-        return 0.5 * (1 + math.cos(math.pi * progress))
+        return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress))
 
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
