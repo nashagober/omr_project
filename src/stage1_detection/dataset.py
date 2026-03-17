@@ -54,6 +54,20 @@ MUSCIMA_CLASSES: Dict[str, int] = {
     "other":             25,
 }
 
+SKIP_CLASSES = {
+    "staff",
+    "staffline",
+    "staffspace", 
+    "staff-grouping",
+    "measure-separator",
+    "system-separator",
+    "staffGrouping",
+    "staffLine",
+    "staffSpace",
+    "measureSeparator",
+    "systemSeparator",
+    }
+
 NUM_CLASSES = len(MUSCIMA_CLASSES)  # 26 (including background)
 IDX_TO_CLASS: Dict[int, str] = {v: k for k, v in MUSCIMA_CLASSES.items()}
 
@@ -103,6 +117,10 @@ def parse_cropobject_xml(xml_path: str) -> List[Dict]:
             continue
 
         class_name = class_name_el.text.strip()
+
+        if class_name in SKIP_CLASSES or class_name.lower() in {s.lower() for s in SKIP_CLASSES}:
+          continue
+
         annotations.append({
             "class_name": class_name,
             "label":      class_name_to_idx(class_name),
