@@ -1,18 +1,16 @@
 """
-Stage 1 Dataset Loader — MUSCIMA++
-Parses CropObject XML annotations and returns image crops + bounding boxes
-for Faster R-CNN training.
-
-MUSCIMA++ structure expected at root_dir:
-    root_dir/
-        data/cropobjects_withstaff/   <- XML annotation files
-        data/images/                  <- PNG score images
+Stage 1 Dataset Loader
+Supports:
+  - MUSCIMADataset      : 140 annotated images (original MUSCIMA++ images)
+  - CVCMUSCIMADataset   : 1000 images from CVC-MUSCIMA with MUSCIMA++ annotations
+                          mapped across all 50 writers × 20 pages
+  - CombinedDataset     : Both datasets together for training
 """
 
-import os
 import xml.etree.ElementTree as ET
+import random
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 import torch
 from torch.utils.data import Dataset
@@ -23,6 +21,7 @@ import torchvision.transforms.functional as TF
 # ---------------------------------------------------------------------------
 # Class label mapping
 # ---------------------------------------------------------------------------
+
 MUSCIMA_CLASSES: Dict[str, int] = {
     "background":         0,
     "notehead-full":      1,
@@ -52,73 +51,25 @@ MUSCIMA_CLASSES: Dict[str, int] = {
     "other":              25,
 }
 
-NUM_CLASSES = len(MUSCIMA_CLASSES)
-IDX_TO_CLASS: Dict[int, str] = {v: k for k, v in MUSCIMA_CLASSES.items()}
+NUM_CLASSES  = len(MUSCIMA_CLASSES)
+IDX_TO_CLASS = {v: k for k, v in MUSCIMA_CLASSES.items()}
 
-# ---------------------------------------------------------------------------
-# Staff-level classes to skip — these are full-page-width boxes that
-# completely confuse the detector. Only individual symbols should be detected.
-# MUSCIMA++ uses these exact class name strings in the XML files.
-# ---------------------------------------------------------------------------
+# Staff-level classes to skip — full-page-width boxes that confuse the detector
 SKIP_CLASSES = {
-    # Staff structure
     "staff", "Staff",
     "staffLine", "staffline", "staff-line",
     "staffSpace", "staffspace", "staff-space",
     "staffGrouping", "staff-grouping",
-    # Measure/system level
     "measureSeparator", "measure-separator",
     "systemSeparator", "system-separator",
     "systemMeasure", "system-measure",
     "staffMeasure", "staff-measure",
-    # Repeat dots / endings that span measures
     "repeatDot", "repeat-dot",
     "multiMeasureRest", "multi-measure-rest",
 }
 
-import random
-import torchvision.transforms.functional as TF
+_SKIP_NORMALIZED = {s.lower().replace("_", "-") for s in SKIP_CLASSES}
 
-def augment_transform(image: torch.Tensor,
-                      target: Dict) -> Tuple[torch.Tensor, Dict]:
-    """
-    Random augmentations for training images.
-    All transforms preserve bounding box validity.
-    Only call this during training, not val/test.
-    """
-
-    # 1. Random horizontal flip
-    if random.random() > 0.5:
-        w = image.shape[-1]
-        image = TF.hflip(image)
-        if len(target['boxes']) > 0:
-            boxes = target['boxes'].clone()
-            boxes[:, 0] = w - target['boxes'][:, 2]
-            boxes[:, 2] = w - target['boxes'][:, 0]
-            target['boxes'] = boxes
-
-    # 2. Random brightness / contrast / saturation jitter
-    if random.random() > 0.3:
-        image = TF.adjust_brightness(image, random.uniform(0.7, 1.3))
-    if random.random() > 0.3:
-        image = TF.adjust_contrast(image, random.uniform(0.7, 1.3))
-
-    # 3. Random Gaussian noise (simulates scan quality variation)
-    if random.random() > 0.5:
-        noise = torch.randn_like(image) * 0.02
-        image = (image + noise).clamp(0, 1)
-
-    # 4. Random scale jitter — resize to 75%–125% of current size
-    if random.random() > 0.5:
-        h, w  = image.shape[-2], image.shape[-1]
-        scale = random.uniform(0.75, 1.25)
-        new_h = max(int(h * scale), 100)
-        new_w = max(int(w * scale), 100)
-        image = TF.resize(image, [new_h, new_w])
-        if len(target['boxes']) > 0:
-            target['boxes'] = target['boxes'] * scale
-
-    return image, target
 
 def class_name_to_idx(name: str) -> int:
     normalized = name.lower().replace("_", "-")
@@ -137,8 +88,8 @@ def class_name_to_idx(name: str) -> int:
 def parse_cropobject_xml(xml_path: str) -> List[Dict]:
     """
     Parse a MUSCIMA++ CropObject XML file.
-    Skips staff-level structural elements that span the full page width.
     Returns list of {"label": int, "bbox": [x1,y1,x2,y2], "class_name": str}
+    Skips staff-level structural elements.
     """
     tree = ET.parse(xml_path)
     root = tree.getroot()
@@ -156,12 +107,9 @@ def parse_cropobject_xml(xml_path: str) -> List[Dict]:
             continue
 
         class_name = class_name_el.text.strip()
-
-        # Skip staff-level structural elements
         if class_name in SKIP_CLASSES:
             continue
-        if class_name.lower().replace("_", "-") in {
-                s.lower().replace("_", "-") for s in SKIP_CLASSES}:
+        if class_name.lower().replace("_", "-") in _SKIP_NORMALIZED:
             continue
 
         top    = int(top_el.text)
@@ -184,21 +132,56 @@ def parse_cropobject_xml(xml_path: str) -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
-# Resize transform — scales images and boxes to max 800px longest side
+# Transforms
 # ---------------------------------------------------------------------------
 
 def resize_transform(image: torch.Tensor,
                      target: Dict) -> Tuple[torch.Tensor, Dict]:
-    """
-    Resize image so its longest side is at most 800px.
-    Scales bounding boxes proportionally.
-    """
+    """Resize so longest side ≤ 800px, scale boxes proportionally."""
     h, w  = image.shape[-2], image.shape[-1]
-    scale = min(800 / max(h, w), 1.0)   # never upscale
-
+    scale = min(800 / max(h, w), 1.0)
     if scale < 1.0:
         new_h = max(int(h * scale), 1)
         new_w = max(int(w * scale), 1)
+        image = TF.resize(image, [new_h, new_w])
+        if len(target["boxes"]) > 0:
+            target["boxes"] = target["boxes"] * scale
+    return image, target
+
+
+def augment_transform(image: torch.Tensor,
+                      target: Dict) -> Tuple[torch.Tensor, Dict]:
+    """
+    Random augmentations for training — all preserve bounding box validity.
+    Only call during training, not val/test.
+    """
+    # Horizontal flip
+    if random.random() > 0.5:
+        w = image.shape[-1]
+        image = TF.hflip(image)
+        if len(target["boxes"]) > 0:
+            boxes = target["boxes"].clone()
+            boxes[:, 0] = w - target["boxes"][:, 2]
+            boxes[:, 2] = w - target["boxes"][:, 0]
+            target["boxes"] = boxes
+
+    # Brightness / contrast jitter
+    if random.random() > 0.3:
+        image = TF.adjust_brightness(image, random.uniform(0.7, 1.3))
+    if random.random() > 0.3:
+        image = TF.adjust_contrast(image, random.uniform(0.7, 1.3))
+
+    # Gaussian noise (simulates scan variation)
+    if random.random() > 0.5:
+        noise = torch.randn_like(image) * 0.02
+        image = (image + noise).clamp(0, 1)
+
+    # Scale jitter
+    if random.random() > 0.5:
+        h, w  = image.shape[-2], image.shape[-1]
+        scale = random.uniform(0.75, 1.25)
+        new_h = max(int(h * scale), 100)
+        new_w = max(int(w * scale), 100)
         image = TF.resize(image, [new_h, new_w])
         if len(target["boxes"]) > 0:
             target["boxes"] = target["boxes"] * scale
@@ -207,16 +190,63 @@ def resize_transform(image: torch.Tensor,
 
 
 # ---------------------------------------------------------------------------
-# Dataset
+# Shared __getitem__ logic
+# ---------------------------------------------------------------------------
+
+def _load_sample(image_path: str, annotations: List[Dict],
+                 image_id: int, apply_resize: bool,
+                 transform, min_box_area: int = 16) -> Tuple:
+    """
+    Load an image and build a Faster R-CNN compatible target dict.
+    Shared by MUSCIMADataset and CVCMUSCIMADataset.
+    """
+    image        = Image.open(image_path).convert("RGB")
+    image_tensor = TF.to_tensor(image)
+    img_h, img_w = image_tensor.shape[-2], image_tensor.shape[-1]
+
+    boxes, labels = [], []
+    for ann in annotations:
+        x1, y1, x2, y2 = ann["bbox"]
+        w = x2 - x1
+        h = y2 - y1
+        if w * h < min_box_area:
+            continue
+        # Drop boxes covering >70% of page — likely missed staff elements
+        if w > img_w * 0.70 or h > img_h * 0.70:
+            continue
+        boxes.append([x1, y1, x2, y2])
+        labels.append(ann["label"])
+
+    if boxes:
+        boxes_t  = torch.as_tensor(boxes,  dtype=torch.float32)
+        labels_t = torch.as_tensor(labels, dtype=torch.int64)
+    else:
+        boxes_t  = torch.zeros((0, 4), dtype=torch.float32)
+        labels_t = torch.zeros((0,),   dtype=torch.int64)
+
+    target = {
+        "boxes":    boxes_t,
+        "labels":   labels_t,
+        "image_id": torch.tensor([image_id], dtype=torch.int64),
+    }
+
+    if apply_resize:
+        image_tensor, target = resize_transform(image_tensor, target)
+
+    if transform is not None:
+        image_tensor, target = transform(image_tensor, target)
+
+    return image_tensor, target
+
+
+# ---------------------------------------------------------------------------
+# MUSCIMADataset — original 140 annotated images
 # ---------------------------------------------------------------------------
 
 class MUSCIMADataset(Dataset):
     """
-    PyTorch Dataset for MUSCIMA++ handwritten music symbol detection.
-
-    Returns samples compatible with torchvision Faster R-CNN:
-        image  : FloatTensor [3, H, W] in [0, 1]
-        target : dict with "boxes" [N,4], "labels" [N], "image_id" [1]
+    MUSCIMA++ with its original 140 CVC-MUSCIMA images.
+    70/15/15 writer-ID split.
     """
 
     TRAIN_WRITERS = list(range(1, 36))
@@ -231,122 +261,291 @@ class MUSCIMADataset(Dataset):
         self.transform    = transform
         self.min_box_area = min_box_area
         self.apply_resize = apply_resize
-
-        self.image_dir = self.root_dir / "data" / "images"
-        self.xml_dir   = self.root_dir / "data" / "cropobjects_withstaff"
+        self.image_dir    = self.root_dir / "data" / "images"
+        self.xml_dir      = self.root_dir / "data" / "cropobjects_withstaff"
 
         if not self.image_dir.exists():
-            raise FileNotFoundError(
-                f"Image directory not found: {self.image_dir}")
+            raise FileNotFoundError(f"Image dir not found: {self.image_dir}")
         if not self.xml_dir.exists():
-            raise FileNotFoundError(
-                f"Annotation directory not found: {self.xml_dir}")
+            raise FileNotFoundError(f"XML dir not found: {self.xml_dir}")
 
         self.samples = self._load_samples()
-        print(f"[MUSCIMADataset] {split}: {len(self.samples)} images loaded.")
+        print(f"[MUSCIMADataset] {split}: {len(self.samples)} images")
 
-    def _writer_ids_for_split(self) -> List[int]:
+    def _writer_ids(self) -> List[int]:
         return {"train": self.TRAIN_WRITERS,
                 "val":   self.VAL_WRITERS,
                 "test":  self.TEST_WRITERS}[self.split]
 
     def _load_samples(self) -> List[Dict]:
-        writer_ids = self._writer_ids_for_split()
+        writer_ids = self._writer_ids()
         samples    = []
-
         for xml_file in sorted(self.xml_dir.glob("*.xml")):
             stem = xml_file.stem
             try:
-                writer_part = [p for p in stem.split("_")
-                                if p.startswith("W-")][0]
-                writer_id   = int(writer_part.split("-")[1])
+                wpart     = [p for p in stem.split("_") if p.startswith("W-")][0]
+                writer_id = int(wpart.split("-")[1])
             except (IndexError, ValueError):
                 continue
-
             if writer_id not in writer_ids:
                 continue
-
             image_path = self.image_dir / xml_file.with_suffix(".png").name
             if not image_path.exists():
                 image_path = self.image_dir / xml_file.with_suffix(".jpg").name
             if not image_path.exists():
                 continue
-
-            annotations = parse_cropobject_xml(str(xml_file))
-            if not annotations:
+            anns = parse_cropobject_xml(str(xml_file))
+            if not anns:
                 continue
-
             samples.append({
                 "image_path":  str(image_path),
-                "annotations": annotations,
+                "annotations": anns,
                 "image_id":    len(samples),
             })
+        return samples
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        s = self.samples[idx]
+        return _load_sample(s["image_path"], s["annotations"],
+                            s["image_id"], self.apply_resize,
+                            self.transform, self.min_box_area)
+
+
+# ---------------------------------------------------------------------------
+# CVCMUSCIMADataset — 1000 images reusing MUSCIMA++ annotations
+# ---------------------------------------------------------------------------
+
+class CVCMUSCIMADataset(Dataset):
+    """
+    CVC-MUSCIMA MultiConditionAligned dataset paired with MUSCIMA++ annotations.
+
+    How it works:
+    - MUSCIMA++ has annotations for 140 images covering a subset of
+      (writer, page) pairs across all 50 writers.
+    - CVC-MUSCIMA has images for ALL 50 writers × 20 pages = 1000 images.
+    - For each MUSCIMA++ XML (one page from one writer), we find ALL
+      other writers who wrote the same page and reuse those annotations
+      — the notation is identical since every writer copied the same music.
+    - This expands 140 annotated images → ~1000 training samples.
+
+    Expected layout:
+        cvc_dir/
+            CVCMUSCIMA_MultiConditionAligned/
+                binary/
+                    w-01/p001.png ... p020.png
+                    w-02/p001.png ... p020.png
+                    ...
+                    w-50/p001.png ... p020.png
+
+    Args:
+        muscima_dir : MUSCIMA++ root (for XML annotations)
+        cvc_dir     : CVC-MUSCIMA root (for images)
+        split       : "train" | "val" | "test"
+        condition   : image condition to use — "binary" (default),
+                      or others like "kanungo" if present
+    """
+
+    # Same writer split as MUSCIMADataset for consistency
+    TRAIN_WRITERS = list(range(1, 36))
+    VAL_WRITERS   = list(range(36, 44))
+    TEST_WRITERS  = list(range(44, 51))
+
+    def __init__(self, muscima_dir: str, cvc_dir: str,
+                 split: str = "train", condition: str = "binary",
+                 transform=None, min_box_area: int = 16,
+                 apply_resize: bool = True):
+        self.muscima_dir  = Path(muscima_dir)
+        self.cvc_dir      = Path(cvc_dir)
+        self.split        = split
+        self.condition    = condition
+        self.transform    = transform
+        self.min_box_area = min_box_area
+        self.apply_resize = apply_resize
+
+        self.xml_dir      = self.muscima_dir / "data" / "cropobjects_withstaff"
+        self.image_root   = self._find_image_root()
+
+        if not self.xml_dir.exists():
+            raise FileNotFoundError(f"XML dir not found: {self.xml_dir}")
+        if not self.image_root.exists():
+            raise FileNotFoundError(
+                f"CVC-MUSCIMA image root not found: {self.image_root}\n"
+                f"Expected: {self.image_root}")
+
+        self.samples = self._load_samples()
+        print(f"[CVCMUSCIMADataset] {split}/{condition}: "
+              f"{len(self.samples)} images")
+
+    def _find_image_root(self) -> Path:
+        """
+        Locate the binary/ folder — handles the nested
+        CVCMUSCIMA_MultiConditionAligned/ subdirectory.
+        """
+        # Try direct
+        direct = self.cvc_dir / self.condition
+        if direct.exists():
+            return direct
+        # Try with the zip's top-level folder included
+        nested = self.cvc_dir / "CVCMUSCIMA_MultiConditionAligned" / self.condition
+        if nested.exists():
+            return nested
+        # Search one level deep
+        for child in self.cvc_dir.iterdir():
+            candidate = child / self.condition
+            if candidate.exists():
+                return candidate
+        return self.cvc_dir / "CVCMUSCIMA_MultiConditionAligned" / self.condition
+
+    def _writer_ids(self) -> List[int]:
+        return {"train": self.TRAIN_WRITERS,
+                "val":   self.VAL_WRITERS,
+                "test":  self.TEST_WRITERS}[self.split]
+
+    def _parse_xml_stem(self, stem: str):
+        """
+        Extract (writer_id, page_num) from MUSCIMA++ XML filename.
+        e.g. CVC-MUSCIMA_W-01_N-10_D-ideal → (1, 10)
+        """
+        try:
+            parts     = stem.split("_")
+            writer_id = int([p for p in parts if p.startswith("W-")][0].split("-")[1])
+            page_num  = int([p for p in parts if p.startswith("N-")][0].split("-")[1])
+            return writer_id, page_num
+        except (IndexError, ValueError):
+            return None, None
+
+    def _load_samples(self) -> List[Dict]:
+        """
+        For each MUSCIMA++ XML, find ALL writers that have a matching
+        CVC-MUSCIMA image for the same page number.
+        Only include writers in the current split.
+        """
+        writer_ids = set(self._writer_ids())
+        samples    = []
+
+        for xml_file in sorted(self.xml_dir.glob("*.xml")):
+            _, page_num = self._parse_xml_stem(xml_file.stem)
+            if page_num is None:
+                continue
+
+            anns = parse_cropobject_xml(str(xml_file))
+            if not anns:
+                continue
+
+            # Page filename: p001.png, p002.png, ...
+            page_filename = f"p{page_num:03d}.png"
+
+            # Find all writers in this split that have this page
+            for writer_id in writer_ids:
+                writer_folder = self.image_root / f"w-{writer_id:02d}"
+                image_path    = writer_folder / page_filename
+
+                if not image_path.exists():
+                    continue
+
+                samples.append({
+                    "image_path":  str(image_path),
+                    "annotations": anns,
+                    "image_id":    len(samples),
+                })
 
         return samples
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Dict]:
-        sample = self.samples[idx]
+    def __getitem__(self, idx):
+        s = self.samples[idx]
+        return _load_sample(s["image_path"], s["annotations"],
+                            s["image_id"], self.apply_resize,
+                            self.transform, self.min_box_area)
 
-        image        = Image.open(sample["image_path"]).convert("RGB")
-        image_tensor = TF.to_tensor(image)
-        img_h, img_w = image_tensor.shape[-2], image_tensor.shape[-1]
 
-        boxes, labels = [], []
-        for ann in sample["annotations"]:
-            x1, y1, x2, y2 = ann["bbox"]
-            w    = x2 - x1
-            h    = y2 - y1
-            area = w * h
+# ---------------------------------------------------------------------------
+# CombinedDataset — MUSCIMA++ + CVC-MUSCIMA together
+# ---------------------------------------------------------------------------
 
-            # Skip too-small boxes
-            if area < self.min_box_area:
-                continue
+class CombinedDataset(Dataset):
+    """
+    Combines MUSCIMADataset and CVCMUSCIMADataset for training.
+    Simply concatenates both sample lists — no oversampling needed
+    since CVC-MUSCIMA already dwarfs MUSCIMA++ in size.
 
-            # Skip boxes that cover more than 70% of image width or height
-            # — these are almost certainly staff/system-level annotations
-            # that slipped through the class name filter
-            if w > img_w * 0.70 or h > img_h * 0.70:
-                continue
+    Usage:
+        train_ds = CombinedDataset(
+            muscima_dir = "data/raw/muscima",
+            cvc_dir     = "data/raw/cvc_muscima",
+            split       = "train",
+            transform   = augment_transform,
+        )
+    """
 
-            boxes.append([x1, y1, x2, y2])
-            labels.append(ann["label"])
+    def __init__(self, muscima_dir: str, cvc_dir: str,
+                 split: str = "train", condition: str = "binary",
+                 transform=None, min_box_area: int = 16,
+                 apply_resize: bool = True):
 
-        if boxes:
-            boxes_t  = torch.as_tensor(boxes,  dtype=torch.float32)
-            labels_t = torch.as_tensor(labels, dtype=torch.int64)
+        self.muscima_ds = MUSCIMADataset(
+            muscima_dir, split=split, transform=transform,
+            min_box_area=min_box_area, apply_resize=apply_resize)
+
+        self.cvc_ds = CVCMUSCIMADataset(
+            muscima_dir, cvc_dir, split=split, condition=condition,
+            transform=transform, min_box_area=min_box_area,
+            apply_resize=apply_resize)
+
+        self._len_muscima = len(self.muscima_ds)
+        self._len_total   = self._len_muscima + len(self.cvc_ds)
+
+        print(f"[CombinedDataset] {split}: "
+              f"{self._len_muscima} MUSCIMA++ + "
+              f"{len(self.cvc_ds)} CVC-MUSCIMA = "
+              f"{self._len_total} total")
+
+    def __len__(self):
+        return self._len_total
+
+    def __getitem__(self, idx):
+        if idx < self._len_muscima:
+            return self.muscima_ds[idx]
         else:
-            boxes_t  = torch.zeros((0, 4), dtype=torch.float32)
-            labels_t = torch.zeros((0,),   dtype=torch.int64)
+            return self.cvc_ds[idx - self._len_muscima]
 
-        target = {
-            "boxes":    boxes_t,
-            "labels":   labels_t,
-            "image_id": torch.tensor([sample["image_id"]], dtype=torch.int64),
-        }
 
-        # Resize to max 800px before any other transform
-        if self.apply_resize:
-            image_tensor, target = resize_transform(image_tensor, target)
-
-        if self.transform is not None:
-            image_tensor, target = self.transform(image_tensor, target)
-
-        return image_tensor, target
-
+# ---------------------------------------------------------------------------
+# Collate function
+# ---------------------------------------------------------------------------
 
 def collate_fn(batch):
     return [item[0] for item in batch], [item[1] for item in batch]
 
 
+# ---------------------------------------------------------------------------
+# Sanity check
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     import sys
-    root = sys.argv[1] if len(sys.argv) > 1 else "data/raw/muscima"
-    ds   = MUSCIMADataset(root, split="train")
+
+    muscima_dir = sys.argv[1] if len(sys.argv) > 1 else "data/raw/muscima"
+    cvc_dir     = sys.argv[2] if len(sys.argv) > 2 else "data/raw/cvc_muscima"
+
+    print("=== MUSCIMADataset ===")
+    ds = MUSCIMADataset(muscima_dir, split="train")
     img, tgt = ds[0]
-    print(f"Image shape : {img.shape}")
-    print(f"Num boxes   : {len(tgt['boxes'])}")
-    print(f"Label sample: {tgt['labels'][:5].tolist()}")
-    print(f"Box sample  : {tgt['boxes'][:3].tolist()}")
+    print(f"  Image : {img.shape}  Boxes: {len(tgt['boxes'])}")
+
+    print("\n=== CVCMUSCIMADataset ===")
+    cvc = CVCMUSCIMADataset(muscima_dir, cvc_dir, split="train")
+    img, tgt = cvc[0]
+    print(f"  Image : {img.shape}  Boxes: {len(tgt['boxes'])}")
+
+    print("\n=== CombinedDataset ===")
+    combined = CombinedDataset(muscima_dir, cvc_dir, split="train",
+                               transform=augment_transform)
+    img, tgt = combined[0]
+    print(f"  Image : {img.shape}  Boxes: {len(tgt['boxes'])}")
+    print(f"  Total samples: {len(combined)}")

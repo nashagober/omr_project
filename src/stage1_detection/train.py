@@ -25,7 +25,10 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision.models.detection import FasterRCNN
 
-from src.stage1_detection.dataset import MUSCIMADataset, collate_fn, augment_transform
+from src.stage1_detection.dataset import (
+    MUSCIMADataset, CVCMUSCIMADataset, CombinedDataset,
+    collate_fn, augment_transform,
+)
 from src.stage1_detection.detector import build_faster_rcnn
 from src.stage1_detection.evaluate import evaluate
 from src.stage1_detection.visualize import plot_all
@@ -91,9 +94,24 @@ def train(args):
         d.mkdir(parents=True, exist_ok=True)
 
     # ---- Datasets ----
-    # apply_resize=True scales images to max 800px — critical for performance
-    train_ds = MUSCIMADataset(args.data_dir, split="train", apply_resize=True, transform=augment_transform)
-    val_ds   = MUSCIMADataset(args.data_dir, split="val",   apply_resize=True)
+    # Use CombinedDataset if --cvc_dir is provided, else MUSCIMA++ only
+    if args.cvc_dir:
+        print(f"[Train] Using CombinedDataset (MUSCIMA++ + CVC-MUSCIMA)")
+        train_ds = CombinedDataset(
+            muscima_dir  = args.data_dir,
+            cvc_dir      = args.cvc_dir,
+            split        = "train",
+            transform    = augment_transform,
+            apply_resize = True,
+        )
+    else:
+        print(f"[Train] Using MUSCIMADataset only")
+        train_ds = MUSCIMADataset(
+            args.data_dir, split="train",
+            transform=augment_transform, apply_resize=True)
+
+    # Always validate on MUSCIMA++ only — the annotated ground truth
+    val_ds = MUSCIMADataset(args.data_dir, split="val", apply_resize=True)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,
                               shuffle=True,  collate_fn=collate_fn,
@@ -121,11 +139,12 @@ def train(args):
     optimizer = torch.optim.SGD(params, lr=args.lr,
                                 momentum=0.9, weight_decay=1e-4)
 
-    # Warmup for 3 epochs then cosine decay — stays active the whole run
+    # Warmup for 3 epochs then slow cosine decay
+    # Decays to 10% of peak LR by end of training rather than 0%
+    # so the model keeps making small improvements in later epochs
     def lr_lambda(ep):
         if ep < 3:
-            return (ep + 1) / 3          # 3-epoch warmup
-        # Slower cosine — only decays to 10% of peak by end of training
+            return (ep + 1) / 3          # linear warmup
         progress = (ep - 3) / max(1, args.epochs - 3)
         return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress))
 
@@ -266,6 +285,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Train Stage 1 Faster R-CNN on MUSCIMA++")
     parser.add_argument("--data_dir",       type=str,   default="data/raw/muscima")
+    parser.add_argument("--cvc_dir",        type=str,   default=None,
+                        help="Path to CVC-MUSCIMA root dir. If provided, trains on "
+                             "MUSCIMA++ + all 1000 CVC-MUSCIMA images.")
     parser.add_argument("--output_dir",     type=str,   default="outputs/stage1",
                         help="Drive path — best.pt, metrics, plots saved here")
     parser.add_argument("--local_ckpt_dir", type=str,   default=None,
