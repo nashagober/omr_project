@@ -1,25 +1,3 @@
-"""
-Stage 2 PrIMuS Dataset
-Loads the Printed Images of Music Staves (PrIMuS) semantic encoding files
-and converts them to token sequences for decoder-only language model training.
-
-PrIMuS semantic format (one line per staff):
-    clef-G2 keySignature-GM timeSignature-4/4 note-E4_quarter
-    note-F4_quarter note-G4_half barline note-A4_quarter rest-quarter
-
-Download PrIMuS:
-    wget https://grfia.dlsi.ua.es/primus/packages/primusCalvoRizo2018.zip
-
-Expected directory layout after extraction:
-    root_dir/
-        <hash>/
-            <hash>.semantic     <- token sequence (one line)
-            <hash>.png          <- score image (not used for training)
-            <hash>.mei          <- MEI encoding (not used)
-            <hash>.midi         <- MIDI (not used)
-
-There are 87,678 samples total. We use an 85/7.5/7.5 train/val/test split.
-"""
 
 import os
 import random
@@ -36,16 +14,6 @@ from src.stage2_sequencing.vocabulary import (
 MAX_SEQ_LEN = 512
 
 
-# ---------------------------------------------------------------------------
-# PrIMuS semantic token → our vocabulary mapping
-# ---------------------------------------------------------------------------
-
-# PrIMuS pitch name → our pitch format
-# PrIMuS uses: note-C4_quarter, note-Bb4_eighth, note-F#5_half etc.
-# We use:      NOTE_C4_QUARTER, NOTE_A#4_EIGHTH, NOTE_F#5_HALF
-
-# PrIMuS uses 'b' for flat, '#' for sharp in pitch names
-# We normalize 'b' → '#' equivalent (enharmonic) where needed
 PRIMUS_PITCH_MAP = {
     "Cb": "B",  "Db": "C#", "Eb": "D#", "Fb": "E",
     "Gb": "F#", "Ab": "G#", "Bb": "A#",
@@ -77,9 +45,6 @@ PRIMUS_CLEF_MAP = {
     "clef-C3": "CLEF_C", "clef-C4": "CLEF_C",
 }
 
-# PrIMuS key signature → our KEY token
-# PrIMuS format: keySignature-GM (G major), keySignature-Bbm (Bb minor), etc.
-# We map to sharp/flat count
 PRIMUS_KEY_MAP = {
     "keySignature-CM":  "KEY_0",
     "keySignature-Am":  "KEY_0",
@@ -115,10 +80,7 @@ PRIMUS_KEY_MAP = {
 
 
 def primus_token_to_vocab(token: str) -> Optional[str]:
-    """
-    Convert a single PrIMuS semantic token to our vocabulary token.
-    Returns None if the token should be skipped.
-    """
+
     token = token.strip()
     if not token:
         return None
@@ -162,8 +124,6 @@ def primus_token_to_vocab(token: str) -> Optional[str]:
             return None
         pitch_part, dur_part = body.rsplit("_", 1)
 
-        # Parse pitch: letter(s) + octave number
-        # Find where the octave number starts
         octave_start = -1
         for i, ch in enumerate(pitch_part):
             if ch.isdigit() or (ch == '-' and i > 0):
@@ -224,10 +184,7 @@ def primus_token_to_vocab(token: str) -> Optional[str]:
 
 
 def parse_semantic_line(line: str) -> List[str]:
-    """
-    Parse one line from a .semantic file into our vocabulary token IDs.
-    Returns list of token strings (not IDs).
-    """
+
     raw_tokens = line.strip().split()
     result = []
     for raw in raw_tokens:
@@ -237,25 +194,7 @@ def parse_semantic_line(line: str) -> List[str]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-
 class PrIMuSDataset(Dataset):
-    """
-    PrIMuS semantic encoding dataset for Stage 2 decoder-only LM training.
-
-    Each sample returns:
-        input_ids  : LongTensor [MAX_SEQ_LEN]   (SOS + tokens, padded)
-        target_ids : LongTensor [MAX_SEQ_LEN]   (tokens + EOS, padded)
-        padding_mask: BoolTensor [MAX_SEQ_LEN]  True = padding
-
-    Args:
-        root_dir    : path to extracted PrIMuS directory
-        split       : "train" | "val" | "test"
-        max_seq_len : maximum sequence length
-        seed        : random seed for split reproducibility
-    """
 
     def __init__(self, root_dir: str, split: str = "train",
                  max_seq_len: int = MAX_SEQ_LEN, seed: int = 42):
@@ -267,10 +206,7 @@ class PrIMuSDataset(Dataset):
         print(f"[PrIMuSDataset] {split}: {len(self.samples)} samples loaded")
 
     def _load_samples(self, seed: int) -> List[Dict]:
-        """
-        Find all .semantic files and split into train/val/test.
-        PrIMuS files are in subdirectories named by hash.
-        """
+
         semantic_files = sorted(self.root_dir.rglob("*.semantic"))
         if not semantic_files:
             raise FileNotFoundError(
@@ -343,11 +279,6 @@ class PrIMuSDataset(Dataset):
 
 def collate_fn(batch):
     return {k: torch.stack([s[k] for s in batch]) for k in batch[0]}
-
-
-# ---------------------------------------------------------------------------
-# Sanity check
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys

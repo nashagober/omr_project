@@ -1,12 +1,3 @@
-"""
-Stage 1 Result Visualization
-Generates three categories of plots from training history:
-  1. Loss curves (total + component losses)
-  2. Precision / Recall / mAP curves
-  3. Sample detection images with bounding boxes
-
-All plots are saved as high-res PNGs to the given output directory.
-"""
 
 import json
 from pathlib import Path
@@ -20,11 +11,6 @@ import numpy as np
 
 import torch
 from PIL import Image
-
-
-# ---------------------------------------------------------------------------
-# Style
-# ---------------------------------------------------------------------------
 
 COLORS = {
     "primary":   "#2563EB",   # blue
@@ -54,17 +40,8 @@ def _apply_style():
         "lines.markersize":  5,
     })
 
-
-# ---------------------------------------------------------------------------
-# 1. Loss Curves
-# ---------------------------------------------------------------------------
-
 def plot_loss_curves(history: Dict, output_dir: Path):
-    """
-    Two-panel plot:
-      Left : total training loss per epoch
-      Right: breakdown of the 4 Faster R-CNN loss components
-    """
+
     _apply_style()
     epochs = history["epoch"]
 
@@ -101,17 +78,8 @@ def plot_loss_curves(history: Dict, output_dir: Path):
     plt.close()
     print(f"  [Plot] Saved → {out}")
 
-
-# ---------------------------------------------------------------------------
-# 2. Precision / Recall / mAP Curves
-# ---------------------------------------------------------------------------
-
 def plot_pr_map_curves(history: Dict, output_dir: Path):
-    """
-    Two-panel plot:
-      Left : Precision and Recall curves over epochs
-      Right: mAP and mAP@50 curves over epochs
-    """
+
     _apply_style()
     epochs = history["epoch"]
 
@@ -167,10 +135,7 @@ def plot_pr_map_curves(history: Dict, output_dir: Path):
 
 
 def plot_per_class_map(per_class_metrics: Dict, output_dir: Path):
-    """
-    Horizontal bar chart of per-class AP scores.
-    per_class_metrics: {class_name: {ap, precision, recall}}
-    """
+
     _apply_style()
 
     classes = list(per_class_metrics.keys())
@@ -206,11 +171,6 @@ def plot_per_class_map(per_class_metrics: Dict, output_dir: Path):
     print(f"  [Plot] Saved → {out}")
 
 
-# ---------------------------------------------------------------------------
-# 3. Sample Detection Visualizations
-# ---------------------------------------------------------------------------
-
-# Class index → distinct color for bounding boxes
 _BOX_COLORS = [
     "#EF4444", "#3B82F6", "#10B981", "#F59E0B", "#8B5CF6",
     "#EC4899", "#06B6D4", "#84CC16", "#F97316", "#6366F1",
@@ -224,10 +184,7 @@ def _color_for_class(class_idx: int) -> str:
 def visualize_detections(model, dataset, device: torch.device,
                          output_dir: Path, num_samples: int = 6,
                          confidence_threshold: float = 0.5):
-    """
-    Run the model on `num_samples` images from `dataset` and save
-    side-by-side figures: ground truth (left) vs predictions (right).
-    """
+
     from src.stage1_detection.dataset import IDX_TO_CLASS
 
     _apply_style()
@@ -291,26 +248,11 @@ def visualize_detections(model, dataset, device: torch.device,
         plt.close()
         print(f"  [Plot] Saved → {out}")
 
-
-# ---------------------------------------------------------------------------
-# Master function — call this from train.py
-# ---------------------------------------------------------------------------
-
 def plot_all(history: Dict, plots_dir: Path,
              per_class_metrics: Optional[Dict] = None,
              model=None, dataset=None, device=None,
              num_detection_samples: int = 6):
-    """
-    Generate all three graph categories and save to plots_dir.
 
-    Args:
-        history            : dict returned by train.py history
-        plots_dir          : output directory for .png files
-        per_class_metrics  : from evaluate() — optional, enables per-class AP bar chart
-        model              : trained model — optional, enables detection visualizations
-        dataset            : val/test dataset — optional, enables detection visualizations
-        device             : torch.device — optional
-    """
     plots_dir = Path(plots_dir)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
@@ -327,11 +269,6 @@ def plot_all(history: Dict, plots_dir: Path,
                              num_samples=num_detection_samples)
 
     print(f"[Visualize] All plots saved to {plots_dir}")
-
-
-# ---------------------------------------------------------------------------
-# Standalone: regenerate plots from a saved metrics.json
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse, sys

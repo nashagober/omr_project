@@ -1,18 +1,4 @@
-"""
-Stage 1 Training Script — Faster R-CNN on MUSCIMA++
 
-Usage:
-    python -m src.stage1_detection.train \
-        --data_dir       data/raw/muscima \
-        --output_dir     outputs/stage1 \
-        --local_ckpt_dir /content/local_checkpoints \
-        --epochs         40 \
-        --batch_size     4 \
-        --lr             0.005
-
---local_ckpt_dir : per-epoch checkpoints saved here (Colab local storage)
---output_dir     : best.pt, metrics.json, plots saved here (Drive)
-"""
 
 import argparse
 import json
@@ -33,10 +19,6 @@ from src.stage1_detection.detector import build_faster_rcnn
 from src.stage1_detection.evaluate import evaluate
 from src.stage1_detection.visualize import plot_all
 
-
-# ---------------------------------------------------------------------------
-# Training loop
-# ---------------------------------------------------------------------------
 
 def train_one_epoch(model: FasterRCNN, optimizer, loader: DataLoader,
                     device: torch.device, epoch: int) -> Dict:
@@ -66,20 +48,14 @@ def train_one_epoch(model: FasterRCNN, optimizer, loader: DataLoader,
     return {k: v / n_batches for k, v in total_losses.items()}
 
 
-# ---------------------------------------------------------------------------
-# Main train function
-# ---------------------------------------------------------------------------
-
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Train] Using device: {device}")
 
-    # ---- Paths ----
     output_dir  = Path(args.output_dir)
     results_dir = output_dir / "results"
     plots_dir   = results_dir / "plots"
 
-    # Per-epoch checkpoints → local only if specified
     if args.local_ckpt_dir:
         ckpt_dir = Path(args.local_ckpt_dir) / "checkpoints"
         print(f"[Train] Per-epoch checkpoints → {ckpt_dir}  (local, not Drive)")
@@ -87,14 +63,11 @@ def train(args):
         ckpt_dir = output_dir / "checkpoints"
         print(f"[Train] Per-epoch checkpoints → {ckpt_dir}")
 
-    # best.pt always goes to output_dir (Drive)
     best_ckpt_dir = output_dir / "checkpoints"
 
     for d in [ckpt_dir, best_ckpt_dir, results_dir, plots_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # ---- Datasets ----
-    # Use CombinedDataset if --cvc_dir is provided, else MUSCIMA++ only
     if args.cvc_dir:
         print(f"[Train] Using CombinedDataset (MUSCIMA++ + CVC-MUSCIMA)")
         train_ds = CombinedDataset(
@@ -110,7 +83,7 @@ def train(args):
             args.data_dir, split="train",
             transform=augment_transform, apply_resize=True)
 
-    # Always validate on MUSCIMA++ only — the annotated ground truth
+
     val_ds = MUSCIMADataset(args.data_dir, split="val", apply_resize=True)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size,
@@ -120,11 +93,9 @@ def train(args):
                               shuffle=False, collate_fn=collate_fn,
                               num_workers=args.num_workers)
 
-    # ---- Model ----
     model = build_faster_rcnn(pretrained_backbone=True)
     model.to(device)
 
-    # ---- Resume ----
     start_epoch = 1
     if args.resume and Path(args.resume).exists():
         ckpt = torch.load(args.resume, map_location=device)
@@ -132,16 +103,12 @@ def train(args):
         start_epoch = ckpt.get("epoch", 0) + 1
         print(f"[Train] Resumed from epoch {start_epoch - 1}")
 
-    # ---- Optimizer ----
-    # Single optimizer for entire training — no backbone freeze/unfreeze
-    # which was causing the LR crash at epoch 6
+
     params    = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=args.lr,
                                 momentum=0.9, weight_decay=1e-4)
 
-    # Warmup for 3 epochs then slow cosine decay
-    # Decays to 10% of peak LR by end of training rather than 0%
-    # so the model keeps making small improvements in later epochs
+
     def lr_lambda(ep):
         if ep < 3:
             return (ep + 1) / 3          # linear warmup
@@ -233,10 +200,6 @@ def train(args):
     print(f"[Train] Results → {output_dir}")
 
 
-# ---------------------------------------------------------------------------
-# Post-training evaluation
-# ---------------------------------------------------------------------------
-
 def evaluate_and_plot(checkpoint_path: str, data_dir: str,
                       output_dir: str = "outputs/stage1"):
     from src.stage1_detection.dataset import MUSCIMADataset, collate_fn
@@ -275,11 +238,6 @@ def evaluate_and_plot(checkpoint_path: str, data_dir: str,
     visualize_detections(model, test_ds, device, plots_dir, num_samples=6)
 
     print(f"\n[Eval] Done. Results → {results_dir}")
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

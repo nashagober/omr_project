@@ -1,13 +1,3 @@
-"""
-Stage 2 PrIMuS Evaluation
-Metrics for the decoder-only language model trained on PrIMuS.
-
-Metrics:
-    token_accuracy    : % of tokens predicted correctly (next-token prediction)
-    top5_accuracy     : % where correct next token is in top-5 predictions
-    perplexity        : exp(avg cross-entropy loss) — lower is better
-    avg_loss          : average cross-entropy loss
-"""
 
 from typing import Dict
 import math
@@ -19,15 +9,7 @@ from src.stage2_sequencing.vocabulary import PAD_IDX
 
 @torch.no_grad()
 def evaluate(model, loader, device: torch.device) -> Dict:
-    """
-    Evaluate decoder-only LM on PrIMuS validation/test set.
 
-    Returns:
-        token_accuracy : float — next-token prediction accuracy
-        top5_accuracy  : float — next-token in top-5
-        perplexity     : float — exp(loss), lower is better
-        avg_loss       : float — average cross-entropy loss
-    """
     model.eval()
     criterion = torch.nn.CrossEntropyLoss(ignore_index=PAD_IDX)
 

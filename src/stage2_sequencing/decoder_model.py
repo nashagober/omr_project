@@ -1,21 +1,3 @@
-"""
-Stage 2: Decoder-Only Transformer Language Model
-Used when training on PrIMuS — no encoder needed since PrIMuS provides
-ground truth token sequences directly (no symbol detection input).
-
-Architecture: GPT-style decoder-only transformer
-    - Token embedding + sinusoidal positional encoding
-    - N layers of masked self-attention + feedforward
-    - Causal (autoregressive) — each token only attends to previous tokens
-    - Output projection → vocab logits
-
-This model learns the statistical structure of music notation:
-what tokens follow which other tokens, what valid sequences look like.
-After training on PrIMuS it can be used in two ways:
-    1. Standalone: generate sequences token by token
-    2. Scoring: compute log-probability of a sequence from stage 2
-       (this is how it feeds into stage 3 error correction)
-"""
 
 import math
 from pathlib import Path
@@ -30,11 +12,6 @@ from src.stage2_sequencing.vocabulary import (
     PAD_IDX, SOS_IDX, EOS_IDX,
 )
 from src.stage2_sequencing.primus_dataset import MAX_SEQ_LEN
-
-
-# ---------------------------------------------------------------------------
-# Positional Encoding
-# ---------------------------------------------------------------------------
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = MAX_SEQ_LEN,
@@ -54,27 +31,7 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:, :x.size(1)]
         return self.dropout(x)
 
-
-# ---------------------------------------------------------------------------
-# Decoder-Only Transformer (GPT-style)
-# ---------------------------------------------------------------------------
-
 class MusicDecoderTransformer(nn.Module):
-    """
-    Decoder-only transformer language model for music token sequences.
-
-    Input : [B, S] token IDs
-    Output: [B, S, vocab_size] logits
-
-    Args:
-        vocab_size   : vocabulary size (default from vocabulary.py)
-        d_model      : embedding dimension
-        nhead        : number of attention heads
-        num_layers   : number of transformer decoder layers
-        ffn_dim      : feedforward network hidden dimension
-        dropout      : dropout rate
-        max_seq_len  : maximum sequence length
-    """
 
     def __init__(
         self,
@@ -112,16 +69,7 @@ class MusicDecoderTransformer(nn.Module):
 
     def forward(self, input_ids: torch.Tensor,
                 padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Forward pass for teacher-forced training.
 
-        Args:
-            input_ids    : [B, S] token IDs (SOS + sequence)
-            padding_mask : [B, S] BoolTensor, True = padding position
-
-        Returns:
-            logits : [B, S, vocab_size]
-        """
         S   = input_ids.size(1)
         tgt = self.pos_encoding(
             self.token_embedding(input_ids) * math.sqrt(self.d_model)
@@ -130,11 +78,7 @@ class MusicDecoderTransformer(nn.Module):
         # Causal mask — prevent attending to future tokens
         causal_mask = nn.Transformer.generate_square_subsequent_mask(
             S, device=input_ids.device)
-
-        # Decoder-only: memory = tgt (self-attention over input)
-        # We use TransformerDecoder with tgt == memory to simulate
-        # a decoder-only model — the cross-attention becomes a no-op
-        # since both inputs are identical
+        
         out = self.decoder(
             tgt=tgt,
             memory=tgt,
@@ -147,15 +91,7 @@ class MusicDecoderTransformer(nn.Module):
 
     @torch.no_grad()
     def sequence_log_prob(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the log-probability of a token sequence.
-        Used by stage 3 corrector to score candidate sequences.
 
-        Args:
-            token_ids : [S] or [B, S] token IDs (including SOS)
-        Returns:
-            log_prob  : scalar (or [B]) — sum of log-probs over sequence
-        """
         self.eval()
         if token_ids.dim() == 1:
             token_ids = token_ids.unsqueeze(0)  # [1, S]
@@ -183,19 +119,7 @@ class MusicDecoderTransformer(nn.Module):
                  temperature: float = 1.0,
                  top_k: int = 50,
                  device: Optional[torch.device] = None) -> List[int]:
-        """
-        Autoregressive generation — sample a music token sequence.
 
-        Args:
-            prompt_ids     : optional [S] starting token IDs (defaults to SOS)
-            max_new_tokens : maximum tokens to generate
-            temperature    : sampling temperature (lower = more conservative)
-            top_k          : top-k sampling (0 = greedy)
-            device         : torch device
-
-        Returns:
-            generated token IDs (excluding SOS, including EOS if generated)
-        """
         self.eval()
         if device is None:
             device = next(self.parameters()).device
@@ -227,15 +151,7 @@ class MusicDecoderTransformer(nn.Module):
         return ids[1:]  # strip SOS
 
 
-# ---------------------------------------------------------------------------
-# Inference wrapper (used by main.py and stage 3)
-# ---------------------------------------------------------------------------
-
 class MusicSequenceLM:
-    """
-    Wrapper around MusicDecoderTransformer for inference.
-    Used by main.py and the Stage 3 corrector.
-    """
 
     def __init__(self, config: dict):
         self.config = config

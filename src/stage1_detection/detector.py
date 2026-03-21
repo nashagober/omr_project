@@ -1,9 +1,3 @@
-"""
-Stage 1: Symbol Detector — Faster R-CNN
-Backbone: ResNet-50-FPN (pretrained on COCO, fine-tuned on MUSCIMA++)
-Reference: Pacha et al. (2018) - A Baseline for General Music Object Detection
-"""
-
 from pathlib import Path
 from typing import List, Dict, Optional
 from dataclasses import dataclass
@@ -26,11 +20,6 @@ class DetectedSymbol:
     confidence: float
     staff_line: int      # assigned in post-processing
 
-
-# ---------------------------------------------------------------------------
-# Model builder
-# ---------------------------------------------------------------------------
-
 def build_faster_rcnn(num_classes: int = NUM_CLASSES,
                       pretrained_backbone: bool = True) -> FasterRCNN:
     model = fasterrcnn_resnet50_fpn(pretrained=pretrained_backbone)
@@ -39,8 +28,6 @@ def build_faster_rcnn(num_classes: int = NUM_CLASSES,
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
-    # MUSCIMA++ pages are very dense — default limits of 100 detections
-    # are far too low. Raise all proposal and detection limits.
     model.rpn.pre_nms_top_n_train  = 4000  # default 2000
     model.rpn.pre_nms_top_n_test   = 2000  # default 1000
     model.rpn.post_nms_top_n_train = 2000  # default 2000
@@ -49,17 +36,7 @@ def build_faster_rcnn(num_classes: int = NUM_CLASSES,
 
     return model
 
-
-# ---------------------------------------------------------------------------
-# Inference wrapper
-# ---------------------------------------------------------------------------
-
 class SymbolDetector:
-    """
-    Wraps a trained Faster R-CNN for inference on sheet music images.
-    Used by main.py and the evaluation script.
-    """
-
     def __init__(self, config: dict):
         self.config = config
         self.confidence_threshold = config.get("confidence_threshold", 0.3)
@@ -85,11 +62,6 @@ class SymbolDetector:
 
     @torch.no_grad()
     def detect(self, image_path: str) -> List[DetectedSymbol]:
-        """
-        Run detection on a sheet music image.
-
-        Returns DetectedSymbol list sorted by (staff_line, x1).
-        """
         image_tensor = self.preprocess(image_path).to(self.device)
         outputs = self.model([image_tensor])[0]
 
@@ -115,12 +87,6 @@ class SymbolDetector:
         return symbols
 
     def _assign_staff_line(self, y1: float, y2: float) -> int:
-        """
-        Very simple staff-line assignment: bucket by vertical centre.
-        TODO: Replace with a proper staff detection algorithm once staff
-              positions are extracted from the image.
-        Staff height ≈ 100px is a rough default; tune per dataset.
-        """
         STAFF_HEIGHT_PX = 100
         y_center = (y1 + y2) / 2
         return int(y_center // STAFF_HEIGHT_PX)

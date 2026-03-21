@@ -1,7 +1,3 @@
-"""
-Stage 1 Evaluation — Precision, Recall, mAP
-Computes per-class and aggregate detection metrics on a DataLoader.
-"""
 
 from typing import Dict, List, Tuple
 from collections import defaultdict
@@ -10,10 +6,6 @@ import torch
 import numpy as np
 from torchvision.models.detection import FasterRCNN
 
-
-# ---------------------------------------------------------------------------
-# IoU helpers
-# ---------------------------------------------------------------------------
 
 def box_iou(box_a: List[float], box_b: List[float]) -> float:
     """Compute IoU between two [x1,y1,x2,y2] boxes."""
@@ -31,11 +23,6 @@ def box_iou(box_a: List[float], box_b: List[float]) -> float:
     union  = area_a + area_b - inter
     return inter / union if union > 0 else 0.0
 
-
-# ---------------------------------------------------------------------------
-# Per-class AP (Pascal VOC 11-point interpolation)
-# ---------------------------------------------------------------------------
-
 def compute_ap(precisions: List[float], recalls: List[float]) -> float:
     """11-point interpolated AP (VOC style)."""
     ap = 0.0
@@ -47,14 +34,7 @@ def compute_ap(precisions: List[float], recalls: List[float]) -> float:
 
 def compute_class_ap(predictions: List[Dict], ground_truths: List[Dict],
                      class_idx: int, iou_threshold: float = 0.5) -> Tuple[float, float, float]:
-    """
-    Compute AP, mean precision, mean recall for a single class.
 
-    predictions : list of {"boxes": [[x1,y1,x2,y2],...], "scores": [...], "labels": [...]}
-    ground_truths: list of {"boxes": [[x1,y1,x2,y2],...], "labels": [...]}
-
-    Returns (ap, mean_precision, mean_recall)
-    """
     # Collect all predictions for this class, sorted by score descending
     all_preds = []  # (score, image_idx, box)
     gt_by_image = defaultdict(list)
@@ -107,24 +87,10 @@ def compute_class_ap(predictions: List[Dict], ground_truths: List[Dict],
 
     return ap, mean_p, mean_r
 
-
-# ---------------------------------------------------------------------------
-# Full evaluation
-# ---------------------------------------------------------------------------
-
 @torch.no_grad()
 def evaluate(model: FasterRCNN, loader, device: torch.device,
              iou_threshold: float = 0.5) -> Dict:
-    """
-    Run model on the validation/test DataLoader and compute:
-        map      — mean AP across all classes (IoU=0.5)
-        map_50   — same as map (alias for 0.5 threshold)
-        precision — macro-averaged precision
-        recall    — macro-averaged recall
-        per_class — {class_name: {ap, precision, recall}}
-
-    Returns a flat dict of scalar metrics.
-    """
+    
     from src.stage1_detection.dataset import IDX_TO_CLASS, NUM_CLASSES
 
     model.eval()

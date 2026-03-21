@@ -1,12 +1,3 @@
-"""
-Stage 2 PrIMuS Visualization
-Plots for the decoder-only language model trained on PrIMuS.
-
-Three plot categories:
-  1. Loss and perplexity curves
-  2. Token accuracy and top-5 accuracy curves
-  3. Sample generated sequences vs ground truth
-"""
 
 import json
 from pathlib import Path
@@ -48,10 +39,6 @@ def _style():
     })
 
 
-# ---------------------------------------------------------------------------
-# 1. Loss and Perplexity
-# ---------------------------------------------------------------------------
-
 def plot_loss_perplexity(history: Dict, output_dir: Path):
     _style()
     epochs = history["epoch"]
@@ -92,10 +79,6 @@ def plot_loss_perplexity(history: Dict, output_dir: Path):
     print(f"  [Plot] Saved → {out}")
 
 
-# ---------------------------------------------------------------------------
-# 2. Accuracy Curves
-# ---------------------------------------------------------------------------
-
 def plot_accuracy_curves(history: Dict, output_dir: Path):
     _style()
     epochs = history["epoch"]
@@ -127,17 +110,9 @@ def plot_accuracy_curves(history: Dict, output_dir: Path):
     plt.close()
     print(f"  [Plot] Saved → {out}")
 
-
-# ---------------------------------------------------------------------------
-# 3. Generated vs Ground Truth Sequences
-# ---------------------------------------------------------------------------
-
 def visualize_generations(model, dataset, device, output_dir: Path,
                            num_samples: int = 5):
-    """
-    For each sample: show ground truth tokens and model-generated tokens
-    side by side. Color each generated token green (match) or red (mismatch).
-    """
+
     import torch
     from src.stage2_sequencing.vocabulary import IDX_TO_TOKEN, SOS_IDX, PAD_IDX
 
@@ -197,11 +172,6 @@ def visualize_generations(model, dataset, device, output_dir: Path,
         plt.savefig(out, dpi=120, bbox_inches="tight")
         plt.close()
         print(f"  [Plot] Saved → {out}")
-
-
-# ---------------------------------------------------------------------------
-# Master function
-# ---------------------------------------------------------------------------
 
 def plot_all(history: Dict, plots_dir: Path,
              model=None, dataset=None, device=None,

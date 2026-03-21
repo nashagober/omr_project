@@ -1,12 +1,3 @@
-"""
-Stage 1 Dataset Loader
-Supports:
-  - MUSCIMADataset      : 140 annotated images (original MUSCIMA++ images)
-  - CVCMUSCIMADataset   : 1000 images from CVC-MUSCIMA with MUSCIMA++ annotations
-                          mapped across all 50 writers × 20 pages
-  - CombinedDataset     : Both datasets together for training
-"""
-
 import xml.etree.ElementTree as ET
 import random
 from pathlib import Path
@@ -16,11 +7,6 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms.functional as TF
-
-
-# ---------------------------------------------------------------------------
-# Class label mapping
-# ---------------------------------------------------------------------------
 
 MUSCIMA_CLASSES: Dict[str, int] = {
     "background":         0,
@@ -80,11 +66,6 @@ def class_name_to_idx(name: str) -> int:
             return MUSCIMA_CLASSES[key]
     return MUSCIMA_CLASSES["other"]
 
-
-# ---------------------------------------------------------------------------
-# XML Parsing
-# ---------------------------------------------------------------------------
-
 def parse_cropobject_xml(xml_path: str) -> List[Dict]:
     """
     Parse a MUSCIMA++ CropObject XML file.
@@ -130,11 +111,6 @@ def parse_cropobject_xml(xml_path: str) -> List[Dict]:
 
     return annotations
 
-
-# ---------------------------------------------------------------------------
-# Transforms
-# ---------------------------------------------------------------------------
-
 def resize_transform(image: torch.Tensor,
                      target: Dict) -> Tuple[torch.Tensor, Dict]:
     """Resize so longest side ≤ 800px, scale boxes proportionally."""
@@ -151,10 +127,7 @@ def resize_transform(image: torch.Tensor,
 
 def augment_transform(image: torch.Tensor,
                       target: Dict) -> Tuple[torch.Tensor, Dict]:
-    """
-    Random augmentations for training — all preserve bounding box validity.
-    Only call during training, not val/test.
-    """
+
     # Horizontal flip
     if random.random() > 0.5:
         w = image.shape[-1]
@@ -187,11 +160,6 @@ def augment_transform(image: torch.Tensor,
             target["boxes"] = target["boxes"] * scale
 
     return image, target
-
-
-# ---------------------------------------------------------------------------
-# Shared __getitem__ logic
-# ---------------------------------------------------------------------------
 
 def _load_sample(image_path: str, annotations: List[Dict],
                  image_id: int, apply_resize: bool,
@@ -239,15 +207,7 @@ def _load_sample(image_path: str, annotations: List[Dict],
     return image_tensor, target
 
 
-# ---------------------------------------------------------------------------
-# MUSCIMADataset — original 140 annotated images
-# ---------------------------------------------------------------------------
-
 class MUSCIMADataset(Dataset):
-    """
-    MUSCIMA++ with its original 140 CVC-MUSCIMA images.
-    70/15/15 writer-ID split.
-    """
 
     TRAIN_WRITERS = list(range(1, 36))
     VAL_WRITERS   = list(range(36, 44))
@@ -313,40 +273,7 @@ class MUSCIMADataset(Dataset):
                             s["image_id"], self.apply_resize,
                             self.transform, self.min_box_area)
 
-
-# ---------------------------------------------------------------------------
-# CVCMUSCIMADataset — 1000 images reusing MUSCIMA++ annotations
-# ---------------------------------------------------------------------------
-
 class CVCMUSCIMADataset(Dataset):
-    """
-    CVC-MUSCIMA MultiConditionAligned dataset paired with MUSCIMA++ annotations.
-
-    How it works:
-    - MUSCIMA++ has annotations for 140 images covering a subset of
-      (writer, page) pairs across all 50 writers.
-    - CVC-MUSCIMA has images for ALL 50 writers × 20 pages = 1000 images.
-    - For each MUSCIMA++ XML (one page from one writer), we find ALL
-      other writers who wrote the same page and reuse those annotations
-      — the notation is identical since every writer copied the same music.
-    - This expands 140 annotated images → ~1000 training samples.
-
-    Expected layout:
-        cvc_dir/
-            CVCMUSCIMA_MultiConditionAligned/
-                binary/
-                    w-01/p001.png ... p020.png
-                    w-02/p001.png ... p020.png
-                    ...
-                    w-50/p001.png ... p020.png
-
-    Args:
-        muscima_dir : MUSCIMA++ root (for XML annotations)
-        cvc_dir     : CVC-MUSCIMA root (for images)
-        split       : "train" | "val" | "test"
-        condition   : image condition to use — "binary" (default),
-                      or others like "kanungo" if present
-    """
 
     # Same writer split as MUSCIMADataset for consistency
     TRAIN_WRITERS = list(range(1, 36))
@@ -380,10 +307,6 @@ class CVCMUSCIMADataset(Dataset):
               f"{len(self.samples)} images")
 
     def _find_image_root(self) -> Path:
-        """
-        Locate the binary/ folder — handles the nested
-        CVCMUSCIMA_MultiConditionAligned/ subdirectory.
-        """
         # Try direct
         direct = self.cvc_dir / self.condition
         if direct.exists():
@@ -405,10 +328,6 @@ class CVCMUSCIMADataset(Dataset):
                 "test":  self.TEST_WRITERS}[self.split]
 
     def _parse_xml_stem(self, stem: str):
-        """
-        Extract (writer_id, page_num) from MUSCIMA++ XML filename.
-        e.g. CVC-MUSCIMA_W-01_N-10_D-ideal → (1, 10)
-        """
         try:
             parts     = stem.split("_")
             writer_id = int([p for p in parts if p.startswith("W-")][0].split("-")[1])
@@ -418,11 +337,6 @@ class CVCMUSCIMADataset(Dataset):
             return None, None
 
     def _load_samples(self) -> List[Dict]:
-        """
-        For each MUSCIMA++ XML, find ALL writers that have a matching
-        CVC-MUSCIMA image for the same page number.
-        Only include writers in the current split.
-        """
         writer_ids = set(self._writer_ids())
         samples    = []
 
@@ -469,19 +383,6 @@ class CVCMUSCIMADataset(Dataset):
 # ---------------------------------------------------------------------------
 
 class CombinedDataset(Dataset):
-    """
-    Combines MUSCIMADataset and CVCMUSCIMADataset for training.
-    Simply concatenates both sample lists — no oversampling needed
-    since CVC-MUSCIMA already dwarfs MUSCIMA++ in size.
-
-    Usage:
-        train_ds = CombinedDataset(
-            muscima_dir = "data/raw/muscima",
-            cvc_dir     = "data/raw/cvc_muscima",
-            split       = "train",
-            transform   = augment_transform,
-        )
-    """
 
     def __init__(self, muscima_dir: str, cvc_dir: str,
                  split: str = "train", condition: str = "binary",
